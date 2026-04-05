@@ -57,6 +57,20 @@
 <div id="cardsContainer"><div class="loading-spinner">Loading signals...</div></div>
 
 <script>
+const TELEGRAM_BOT = "8754842364:AAFVLiTys9Qb-9i-GX0GgzhrmkPg2v8-41g";
+const TELEGRAM_CHAT = "7875387289";
+const lastAlerted = {};
+
+async function sendTelegram(message) {
+    try {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT, text: message, parse_mode: "HTML" })
+        });
+    } catch(e) { console.error("Telegram error:", e); }
+}
+
 const COINS = [
     { symbol: "BTCUSDT", name: "BTCUSD", trade: true },
     { symbol: "ETHUSDT", name: "ETHUSD", trade: true },
@@ -357,6 +371,19 @@ function renderAlerts(results) {
         </div>`).join("");
 }
 
+async function checkAndNotify(results) {
+    for (const { coin, data } of results) {
+        if (!data || !coin.trade || data.signal === "NEUTRAL") continue;
+        const key = `${coin.symbol}_${data.signal}`;
+        const now = Date.now();
+        if (lastAlerted[key] && now - lastAlerted[key] < 5 * 60 * 1000) continue;
+        lastAlerted[key] = now;
+        const emoji = data.signal === "LONG" ? "🟢" : "🔴";
+        const msg = `${emoji} <b>${data.signal} SIGNAL — ${coin.name}</b>\n\n💰 Entry: $${data.close.toFixed(2)}\n🛑 SL: $${data.sl.toFixed(2)}\n🎯 TP: $${data.tp.toFixed(2)}\n\n📊 RSI: ${data.rsiVal.toFixed(1)} | ADX: ${data.adxVal.toFixed(1)}\n⏰ ${new Date().toLocaleTimeString()}`;
+        await sendTelegram(msg);
+    }
+}
+
 function startCountdown() {
     clearInterval(timer);
     countdown = 10;
@@ -371,6 +398,7 @@ async function loadSignals() {
     document.getElementById("refreshBar").textContent = "Fetching signals...";
     const results = await Promise.all(COINS.map(async coin=>({coin, data: await analyzeSymbol(coin)})));
     results.forEach(({coin,data})=>{ if(data) prevPrices[coin.symbol]=data.close; });
+    await checkAndNotify(results);
     renderAlerts(results);
     document.getElementById("cardsContainer").innerHTML = results.map(({coin,data})=>renderCard(coin,data)).join("");
     startCountdown();
