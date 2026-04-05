@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Algo Trading Signals</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0a0a0a; color: #fff; font-family: -apple-system, sans-serif; padding: 16px; }
+        h1 { text-align: center; font-size: 18px; color: #f0a500; margin-bottom: 4px; }
+        .subtitle { text-align: center; font-size: 11px; color: #666; margin-bottom: 16px; }
+        .refresh-bar { text-align: center; font-size: 11px; color: #444; margin-bottom: 16px; }
+        .card { background: #111; border-radius: 12px; padding: 16px; margin-bottom: 12px; border: 1px solid #222; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .coin-name { font-size: 16px; font-weight: bold; }
+        .signal { font-size: 14px; font-weight: bold; padding: 6px 14px; border-radius: 20px; }
+        .signal.LONG { background: #0d3d1f; color: #00e676; border: 1px solid #00e676; }
+        .signal.SHORT { background: #3d0d0d; color: #ff5252; border: 1px solid #ff5252; }
+        .signal.NEUTRAL { background: #1a1a1a; color: #888; border: 1px solid #333; }
+        .signal.LOADING { background: #1a1a1a; color: #555; border: 1px solid #333; }
+        .price { font-size: 22px; font-weight: bold; margin-bottom: 12px; }
+        .price.up { color: #00e676; }
+        .price.down { color: #ff5252; }
+        .indicators { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .indicator { background: #0a0a0a; border-radius: 8px; padding: 8px; }
+        .indicator-label { font-size: 10px; color: #666; margin-bottom: 2px; }
+        .indicator-value { font-size: 13px; font-weight: bold; }
+        .indicator-value.bull { color: #00e676; }
+        .indicator-value.bear { color: #ff5252; }
+        .indicator-value.neutral { color: #888; }
+        .timeframe-row { display: flex; gap: 8px; margin-bottom: 12px; }
+        .tf-badge { flex: 1; text-align: center; padding: 6px; border-radius: 8px; font-size: 11px; font-weight: bold; }
+        .tf-badge.up { background: #0d3d1f; color: #00e676; }
+        .tf-badge.down { background: #3d0d0d; color: #ff5252; }
+        .tf-badge.neutral { background: #1a1a1a; color: #666; }
+        .alert-box { border-radius: 10px; padding: 14px; margin-bottom: 12px; text-align: center; display: none; }
+        .alert-box.long { background: #0d3d1f; border: 2px solid #00e676; color: #00e676; }
+        .alert-box.short { background: #3d0d0d; border: 2px solid #ff5252; color: #ff5252; }
+        .alert-box .alert-title { font-size: 22px; font-weight: bold; margin-bottom: 4px; }
+        .alert-box .alert-sub { font-size: 13px; opacity: 0.8; }
+        .tag { font-size: 10px; color: #444; background: #1a1a1a; padding: 2px 6px; border-radius: 4px; }
+        .error { text-align: center; color: #ff5252; padding: 20px; }
+        .loading-spinner { text-align: center; color: #444; padding: 40px; font-size: 14px; }
+        .last-update { font-size: 10px; color: #333; text-align: right; margin-top: 8px; }
+        .divider { height: 1px; background: #1a1a1a; margin: 10px 0; }
+        .entry-info { background: #0a0a0a; border-radius: 8px; padding: 10px; margin-top: 10px; }
+        .entry-label { font-size: 10px; color: #666; }
+        .entry-value { font-size: 13px; color: #f0a500; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<h1>⚡ Algo Trading Signals</h1>
+<p class="subtitle">BTC • ETH • XRP • SOL | Multi-Timeframe Analysis</p>
+<div class="refresh-bar" id="refreshBar">Initializing...</div>
+
+<div id="alertContainer"></div>
+<div id="cardsContainer"><div class="loading-spinner">Loading signals...</div></div>
+
+<script>
+const COINS = [
+    { symbol: "BTCUSD", name: "Bitcoin", id: "bitcoin", trade: true },
+    { symbol: "ETHUSD", name: "Ethereum", id: "ethereum", trade: true },
+    { symbol: "XRPUSD", name: "XRP", id: "ripple", trade: false },
+    { symbol: "SOLUSD", name: "Solana", id: "solana", trade: false }
+];
+
+const BASE = "https://api.india.delta.exchange";
+let lastSignals = {};
+
+async function fetchOHLC(symbol, resolution, count) {
+    const minutes = { "5m": 5, "15m": 15, "1h": 60 };
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - (minutes[resolution] * 60 * count);
+    const url = `${BASE}/v2/history/candles?resolution=${resolution}&symbol=${symbol}&start=${start}&end=${end}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.result || data.result.length === 0) return null;
+    return data.result.map(c => ({
+        open: parseFloat(c.o),
+        high: parseFloat(c.h),
+        low: parseFloat(c.l),
+        close: parseFloat(c.c),
+        volume: parseFloat(c.v)
+    }));
+}
+
+function ema(data, period) {
+    const k = 2 / (period + 1);
+    let emaVal = data[0];
+    const result = [emaVal];
+    for (let i = 1; i < data.length; i++) {
+        emaVal = data[i] * k + emaVal * (1 - k);
+        result.push(emaVal);
+    }
+    return result;
+}
+
+function rsi(closes, period = 14) {
+    const gains = [], losses = [];
+    for (let i = 1; i < closes.length; i++) {
+        const diff = closes[i] - closes[i - 1];
+        gains.push(Math.max(diff, 0));
+        losses.push(Math.max(-diff, 0));
+    }
+    let avgGain = gains.slice(0, period).reduce((a, b) => a + b) / period;
+    let avgLoss = losses.slice(0, period).reduce((a, b) => a + b) / period;
+    const rsiArr = [];
+    for (let i = period; i < gains.length; i++) {
+        avgGain = (avgGain * (period - 1) + gains[i]) / period;
+        avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        rsiArr.push(100 - 100 / (1 + rs));
+    }
+    return rsiArr;
+}
+
+function atr(candles, period = 14) {
+    const trs = candles.map((c, i) => {
+        if (i === 0) return c.high - c.low;
+        const prevClose = candles[i - 1].close;
+        return Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+    });
+    const atrArr = [];
+    let avg = trs.slice(0, period).reduce((a, b) => a + b) / period;
+    atrArr.push(avg);
+    for (let i = period; i < trs.length; i++) {
+        avg = (avg * (period - 1) + trs[i]) / period;
+        atrArr.push(avg);
+    }
+    return atrArr;
+}
+
+function bollinger(closes, period = 20) {
+    const result = [];
+    for (let i = period - 1; i < closes.length; i++) {
+        const slice = closes.slice(i - period + 1, i + 1);
+        const mean = slice.reduce((a, b) => a + b) / period;
+        const std = Math.sqrt(slice.reduce((a, b) => a + (b - mean) ** 2, 0) / period);
+        result.push({ upper: mean + 2 * std, mid: mean, lower: mean - 2 * std });
+    }
+    return result;
+}
+
+function macd(closes, fast = 12, slow = 26, signal = 9) {
+    const emaFast = ema(closes, fast);
+    const emaSlow = ema(closes, slow);
+    const macdLine = emaFast.map((v, i) => v - emaSlow[i]);
+    const signalLine = ema(macdLine.slice(slow - fast), signal);
+    const hist = signalLine.map((v, i) => macdLine[slow - fast + i] - v);
+    return { hist, macdLine, signalLine };
+}
+
+function adx(candles, period = 14) {
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
+    const closes = candles.map(c => c.close);
+    const plusDM = [], minusDM = [], trs = [];
+    for (let i = 1; i < candles.length; i++) {
+        plusDM.push(Math.max(highs[i] - highs[i - 1], 0));
+        minusDM.push(Math.max(lows[i - 1] - lows[i], 0));
+        trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+    }
+    const smoothTR = ema(trs, period);
+    const smoothPlus = ema(plusDM, period);
+    const smoothMinus = ema(minusDM, period);
+    const dx = smoothTR.map((tr, i) => {
+        const plus = 100 * smoothPlus[i] / (tr || 1);
+        const minus = 100 * smoothMinus[i] / (tr || 1);
+        return 100 * Math.abs(plus - minus) / ((plus + minus) || 1);
+    });
+    return ema(dx, period);
+}
+
+function supertrend(candles, period = 10, mult = 3) {
+    const atrVals = atr(candles, period);
+    let direction = 1;
+    const dirs = [];
+    for (let i = 0; i < atrVals.length; i++) {
+        const ci = candles[i + period - 1];
+        const hl2 = (ci.high + ci.low) / 2;
+        const upper = hl2 + mult * atrVals[i];
+        const lower = hl2 - mult * atrVals[i];
+        if (i > 0) {
+            if (ci.close > upper) direction = 1;
+            else if (ci.close < lower) direction = -1;
+        }
+        dirs.push(direction);
+    }
+    return dirs;
+}
+
+function vwap(candles) {
+    let cumPV = 0, cumV = 0;
+    return candles.map(c => {
+        const tp = (c.high + c.low + c.close) / 3;
+        cumPV += tp * c.volume;
+        cumV += c.volume;
+        return cumPV / cumV;
+    });
+}
+
+function stochRSI(closes, period = 14, smoothK = 3) {
+    const rsiVals = rsi(closes, period);
+    const stoch = [];
+    for (let i = period - 1; i < rsiVals.length; i++) {
+        const slice = rsiVals.slice(i - period + 1, i + 1);
+        const min = Math.min(...slice);
+        const max = Math.max(...slice);
+        stoch.push((rsiVals[i] - min) / ((max - min) || 1) * 100);
+    }
+    const k = ema(stoch, smoothK);
+    return k;
+}
+
+function lorentzian(closes, rsiVals, nNeighbors = 8) {
+    const i = closes.length - 1;
+    const distances = [];
+    for (let j = i - 4; j >= Math.max(i - 100, 4); j -= 4) {
+        const d = Math.log(1 + Math.abs(rsiVals[i] - rsiVals[j]));
+        const label = closes[j] > closes[j - 4] ? 1 : -1;
+        distances.push({ d, label });
+    }
+    distances.sort((a, b) => a.d - b.d);
+    const top = distances.slice(0, nNeighbors);
+    return top.reduce((sum, x) => sum + x.label, 0);
+}
+
+async function analyzeSymbol(symbol) {
+    try {
+        const [candles5m, candles15m, candles1h] = await Promise.all([
+            fetchOHLC(symbol, "5m", 100),
+            fetchOHLC(symbol, "15m", 100),
+            fetchOHLC(symbol, "1h", 100)
+        ]);
+
+        if (!candles5m || !candles15m || !candles1h) return null;
+
+        const closes15 = candles15m.map(c => c.close);
+        const closes1h = candles1h.map(c => c.close);
+        const closes5m = candles5m.map(c => c.close);
+
+        // 1H trend
+        const ema20_1h = ema(closes1h, 20);
+        const ema50_1h = ema(closes1h, 50);
+        const close1h = closes1h[closes1h.length - 1];
+        const trend1h = ema20_1h.at(-1) > ema50_1h.at(-1) && close1h > ema20_1h.at(-1) ? "up" :
+                        ema20_1h.at(-1) < ema50_1h.at(-1) && close1h < ema20_1h.at(-1) ? "down" : "neutral";
+
+        // 15M indicators
+        const rsiVals = rsi(closes15, 14);
+        const rsiVal = rsiVals.at(-1);
+        const ema9 = ema(closes15, 9).at(-1);
+        const ema21 = ema(closes15, 21).at(-1);
+        const ema200 = ema(closes15, 200).at(-1);
+        const bb = bollinger(closes15).at(-1);
+        const adxVals = adx(candles15m).at(-1);
+        const macdData = macd(closes15);
+        const macdHist = macdData.hist.at(-1);
+        const stDir = supertrend(candles15m).at(-1);
+        const vwapVal = vwap(candles15m).at(-1);
+        const stochK = stochRSI(closes15).at(-1);
+        const close15 = closes15.at(-1);
+        const prediction = lorentzian(closes15, rsiVals);
+
+        // 5M trend
+        const ema9_5m = ema(closes5m, 9).at(-1);
+        const ema21_5m = ema(closes5m, 21).at(-1);
+        const rsi5m = rsi(closes5m, 14).at(-1);
+        const trend5m = ema9_5m > ema21_5m && rsi5m > 50 ? "up" :
+                        ema9_5m < ema21_5m && rsi5m < 50 ? "down" : "neutral";
+
+        // Signal logic
+        const trending = adxVals > 22;
+        const trendUp = ema9 > ema21 && close15 > ema200 && stDir === 1 && close15 > vwapVal;
+        const trendDown = ema9 < ema21 && close15 < ema200 && stDir === -1 && close15 < vwapVal;
+        const rsiLong = rsiVal > 45 && rsiVal < 80;
+        const rsiShort = rsiVal > 20 && rsiVal < 55;
+        const bbLong = close15 > bb.mid;
+        const bbShort = close15 < bb.mid;
+        const macdLong = macdHist > 0;
+        const macdShort = macdHist < 0;
+        const stochLong = stochK < 80;
+        const stochShort = stochK > 20;
+
+        let signal = "NEUTRAL";
+        if (prediction > 0 && trending && trendUp && trend1h === "up" && trend5m === "up" &&
+            rsiLong && bbLong && macdLong && stochLong) signal = "LONG";
+        else if (prediction < 0 && trending && trendDown && trend1h === "down" && trend5m === "down" &&
+            rsiShort && bbShort && macdShort && stochShort) signal = "SHORT";
+
+        // ATR for SL/TP
+        const atrVal = atr(candles15m).at(-1);
+        const sl = signal === "LONG" ? close15 - atrVal * 1.5 : close15 + atrVal * 1.5;
+        const tp = signal === "LONG" ? close15 + atrVal * 3 : close15 - atrVal * 3;
+
+        return {
+            signal, close: close15, rsi: rsiVal, adx: adxVals,
+            bb, macdHist, stochK, trend1h, trend5m,
+            ema9, ema21, ema200, vwapVal, stDir,
+            sl, tp, atr: atrVal, prediction
+        };
+    } catch (e) {
+        console.error(e);
+        return null;
+    }
+}
+
+function renderCard(coin, data) {
+    if (!data) return `<div class="card"><div class="error">Failed to load ${coin.name}</div></div>`;
+
+    const { signal, close, rsi: rsiVal, adx: adxVal, bb, macdHist, stochK,
+            trend1h, trend5m, sl, tp, prediction } = data;
+
+    const priceClass = close > (lastSignals[coin.symbol]?.close || close) ? "up" : "down";
+    const tag = coin.trade ? "TRADE" : "MONITOR";
+
+    return `
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <span class="coin-name">${coin.symbol}</span>
+                <span class="tag" style="margin-left:6px">${tag}</span>
+            </div>
+            <div class="signal ${signal}">${signal}</div>
+        </div>
+
+        <div class="price ${priceClass}">$${close.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+
+        <div class="timeframe-row">
+            <div class="tf-badge ${trend1h}">1H: ${trend1h.toUpperCase()}</div>
+            <div class="tf-badge ${data.trend5m}">5M: ${data.trend5m.toUpperCase()}</div>
+            <div class="tf-badge ${adxVal > 22 ? 'up' : 'neutral'}">ADX: ${adxVal.toFixed(1)}</div>
+        </div>
+
+        <div class="indicators">
+            <div class="indicator">
+                <div class="indicator-label">RSI (14)</div>
+                <div class="indicator-value ${rsiVal > 50 ? 'bull' : 'bear'}">${rsiVal.toFixed(1)}</div>
+            </div>
+            <div class="indicator">
+                <div class="indicator-label">Stoch RSI</div>
+                <div class="indicator-value ${stochK < 50 ? 'bull' : 'bear'}">${stochK.toFixed(1)}</div>
+            </div>
+            <div class="indicator">
+                <div class="indicator-label">MACD Hist</div>
+                <div class="indicator-value ${macdHist > 0 ? 'bull' : 'bear'}">${macdHist.toFixed(4)}</div>
+            </div>
+            <div class="indicator">
+                <div class="indicator-label">Lorentzian</div>
+                <div class="indicator-value ${prediction > 0 ? 'bull' : prediction < 0 ? 'bear' : 'neutral'}">${prediction > 0 ? '▲ BULL' : prediction < 0 ? '▼ BEAR' : '— NEUT'}</div>
+            </div>
+            <div class="indicator">
+                <div class="indicator-label">BB Upper</div>
+                <div class="indicator-value neutral">${bb.upper.toFixed(2)}</div>
+            </div>
+            <div class="indicator">
+                <div class="indicator-label">BB Lower</div>
+                <div class="indicator-value neutral">${bb.lower.toFixed(2)}</div>
+            </div>
+        </div>
+
+        ${signal !== "NEUTRAL" ? `
+        <div class="divider"></div>
+        <div class="entry-info">
+            <div style="display:flex;justify-content:space-between">
+                <div>
+                    <div class="entry-label">STOP LOSS</div>
+                    <div class="entry-value" style="color:#ff5252">$${sl.toFixed(2)}</div>
+                </div>
+                <div>
+                    <div class="entry-label">TAKE PROFIT</div>
+                    <div class="entry-value" style="color:#00e676">$${tp.toFixed(2)}</div>
+                </div>
+                <div>
+                    <div class="entry-label">ENTRY</div>
+                    <div class="entry-value">$${close.toFixed(2)}</div>
+                </div>
+            </div>
+        </div>` : ''}
+
+        <div class="last-update">Updated: ${new Date().toLocaleTimeString()}</div>
+    </div>`;
+}
+
+function renderAlerts(results) {
+    const alerts = results.filter(r => r.data && r.coin.trade && r.data.signal !== "NEUTRAL");
+    const container = document.getElementById("alertContainer");
+    if (alerts.length === 0) { container.innerHTML = ""; return; }
+
+    container.innerHTML = alerts.map(({ coin, data }) => `
+        <div class="alert-box ${data.signal.toLowerCase()}" style="display:block">
+            <div class="alert-title">${data.signal === "LONG" ? "🟢 BUY" : "🔴 SELL"} ${coin.symbol}</div>
+            <div class="alert-sub">Entry: $${data.close.toFixed(2)} | SL: $${data.sl.toFixed(2)} | TP: $${data.tp.toFixed(2)}</div>
+        </div>
+    `).join("");
+}
+
+let countdown = 30;
+let countdownTimer;
+
+function startCountdown() {
+    clearInterval(countdownTimer);
+    countdown = 30;
+    countdownTimer = setInterval(() => {
+        countdown--;
+        document.getElementById("refreshBar").textContent = `Next refresh in ${countdown}s`;
+        if (countdown <= 0) {
+            clearInterval(countdownTimer);
+            loadSignals();
+        }
+    }, 1000);
+}
+
+async function loadSignals() {
+    document.getElementById("refreshBar").textContent = "Fetching signals...";
+    const results = await Promise.all(COINS.map(async coin => {
+        const data = await analyzeSymbol(coin.symbol);
+        return { coin, data };
+    }));
+
+    lastSignals = {};
+    results.forEach(({ coin, data }) => { if (data) lastSignals[coin.symbol] = data; });
+
+    renderAlerts(results);
+    document.getElementById("cardsContainer").innerHTML = results.map(({ coin, data }) => renderCard(coin, data)).join("");
+    startCountdown();
+}
+
+loadSignals();
+</script>
+</body>
+</html>
