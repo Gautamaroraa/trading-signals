@@ -362,7 +362,7 @@ function renderAlerts(results) {
 
 function startCountdown() {
     clearInterval(timer);
-    countdown = 30;
+    countdown = 10;
     timer = setInterval(()=>{
         countdown--;
         document.getElementById("refreshBar").textContent = `Next refresh in ${countdown}s`;
