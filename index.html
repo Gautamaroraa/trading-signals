@@ -64,7 +64,7 @@ const COINS = [
     { symbol: "SOLUSDT", name: "SOLUSD", trade: false }
 ];
 
-async function fetchOHLC(symbol, interval, limit = 100) {
+async function fetchOHLC(symbol, interval, limit = 150) {
     const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const res = await fetch(url);
     const data = await res.json();
@@ -225,14 +225,12 @@ async function analyzeSymbol(coin) {
         const cl1h = c1h.map(c=>c.close);
         const cl5m = c5m.map(c=>c.close);
 
-        // 1H trend
         const e20_1h = ema(cl1h,20);
         const e50_1h = ema(cl1h,50);
         const last1h = cl1h.at(-1);
         const trend1h = e20_1h.at(-1)>e50_1h.at(-1)&&last1h>e20_1h.at(-1)?"up":
                         e20_1h.at(-1)<e50_1h.at(-1)&&last1h<e20_1h.at(-1)?"down":"neutral";
 
-        // 15M
         const rv15 = rsi(cl15,14);
         const rsiVal = rv15.at(-1);
         const e9 = ema(cl15,9).at(-1);
@@ -247,7 +245,6 @@ async function analyzeSymbol(coin) {
         const close = cl15.at(-1);
         const pred = lorentzian(cl15, rv15);
 
-        // 5M
         const e9_5 = ema(cl5m,9).at(-1);
         const e21_5 = ema(cl5m,21).at(-1);
         const rsi5 = rsi(cl5m,14).at(-1);
@@ -268,7 +265,7 @@ async function analyzeSymbol(coin) {
         const tp = signal==="LONG"?close+atrVal*3:close-atrVal*3;
 
         return { signal, close, rsiVal, adxVal, bb, macdH, stochK,
-                 trend1h, trend5m, sl, tp, pred, e9, e21, vwapVal };
+                 trend1h, trend5m, sl, tp, pred };
     } catch(e) {
         console.error(coin.symbol, e);
         return null;
@@ -276,7 +273,7 @@ async function analyzeSymbol(coin) {
 }
 
 let prevPrices = {};
-let countdown = 30;
+let countdown = 10;
 let timer;
 
 function renderCard(coin, data) {
